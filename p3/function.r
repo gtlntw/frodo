@@ -1183,13 +1183,26 @@ family.test <- function(data=family_generated, f=risk.variant.id, nofounderpheno
 
   if(association.test==T) { #fisher's method to combine two p-values
     #association test using founder treadted as all affected 
-    p.value.association <- prop.test(sum(n_carrier_family), 4*n_family, p=risk.haplo.f)$p.value #assume the known pop f
-    
+  	#SKAT with all founders only
+  	lm.idx <- which(data$data_family$father==0 & data$data_family$mother==0)
+  	data.cc.diploid <- hap2dip(data=list(data_family=data$data_family[lm.idx, ]), risk.variant.id=risk.variant.id, save.file=F)
+	  obj <- SKAT_Null_Model(data.cc.diploid$ped$trait ~ 1, out_type="D")
+    p.value.association <- SKAT(as.matrix(data.cc.diploid$geno[, -c(1:2)]), obj, weights.beta = c(1,1), r.corr = 1)$p.value
+
     #fisher's method
     p <- c(p.value, p.value.association)
     Xsq <- -2*sum(log(p))
     p.val <- pchisq(Xsq, df = 2*length(p), lower.tail = FALSE)
-    return(list(Xsq = Xsq, p.value = p.val, p.value.trap = p.value, p.value.association = p.value.association))
+
+    #z-score method
+		z.association <- qnorm(1-p.value.association)
+    z <- qnorm(1-p.value)
+    z.p.val <- 2*pnorm(abs((z + z.association)/sqrt(2)), lower.tail = F)
+    w1 <- 1.6; w2 <- .4
+    z.weighted.p.val <- 2*pnorm(abs((w1*z + w2*z.association)/sqrt(w1^2+w2^2)), lower.tail = F)
+    
+    return(list(Xsq = Xsq, p.value = p.val, p.value.trap = p.value, p.value.association = p.value.association,
+  		 z.p.value=z.p.val, z.weighted.p.value = z.weighted.p.val))
   }
 
   list(final.test.stat=final.test.stat, sum_e=sum(test.stat$mean), se=se, mean_observed=mean(test.stat$observed), mean_mean=mean(test.stat$mean), mean_var=mean(test.stat$var), p.value=p.value, n_info_family=length(test.stat$n_carrier))
@@ -1302,15 +1315,27 @@ family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nof
       #     )
       n_carrier_family[family.idx] <<- n_carrier <- sum(!is.na(carrier)) #no. of carrier haplotypes
     })
-      
-    #association test using founder treadted as all affected 
-    p.value.association <- prop.test(sum(n_carrier_family), 4*n_family, p=risk.haplo.f)$p.value #assume the know pop f
     
+    #SKAT with all founders only
+  	lm.idx <- which(data$data_family$father==0 & data$data_family$mother==0)
+  	data.cc.diploid <- hap2dip(data=list(data_family=data$data_family[lm.idx, ]), risk.variant.id=risk.variant.id, save.file=F)
+	  obj <- SKAT_Null_Model(data.cc.diploid$ped$trait ~ 1, out_type="D")
+    p.value.association <- SKAT(as.matrix(data.cc.diploid$geno[, -c(1:2)]), obj, weights.beta = c(1,1), r.corr = 1)$p.value
+
     #fisher's method
     p <- c(p.value, p.value.association)
     Xsq <- -2*sum(log(p))
     p.val <- pchisq(Xsq, df = 2*length(p), lower.tail = FALSE)
-    return(list(Xsq = Xsq, p.value = p.val, p.value.trafic_ext = p.value, p.value.association = p.value.association))
+
+    #z-score method
+		z.association <- qnorm(1-p.value.association)
+    z <- qnorm(1-p.value)
+    z.p.val <- 2*pnorm(abs((z + z.association)/sqrt(2)), lower.tail = F)
+    w1 <- 1.6; w2 <- .4
+    z.weighted.p.val <- 2*pnorm(abs((w1*z + w2*z.association)/sqrt(w1^2+w2^2)), lower.tail = F)
+      
+    return(list(Xsq = Xsq, p.value = p.val, p.value.trafic_ext = p.value, p.value.association = p.value.association,
+  		 z.p.value=z.p.val, z.weighted.p.value = z.weighted.p.val))
   }
 
   

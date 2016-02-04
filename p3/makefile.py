@@ -106,9 +106,9 @@ def makeSlurm(tgt, dep, cmd):
 			IN.close()
 			os.chmod('{slurmScriptFile}'.format(**opts), 0755);
 
-			cmd_tmp.append('\tsrun -p nomosix,main -J {jobName} -D {outputDir} {slurmScriptFile} \n'.format(**opts))
+			cmd_tmp.append('\tsrun -p nomosix,main -J {jobName} -D {outputDir} {param} {slurmScriptFile} \n'.format(**opts))
 		else:
-			cmd_tmp.append('\tsrun -p nomosix,main -J {jobName} -D {outputDir} {command} \n'.format(**opts))
+			cmd_tmp.append('\tsrun -p nomosix,main -J {jobName} -D {outputDir} {param} {command} \n'.format(**opts))
 	cmd_tmp.append('\ttouch {tgt}\n'.format(tgt=tgt))
 	cmds.append(cmd_tmp)
  
@@ -131,6 +131,7 @@ opts['n_rep_total']=1000 #total number of replications
 opts['n_rep']=100 #number of replications in each parallele job
 opts['n_ite']=opts['n_rep_total']/opts['n_rep'] #number of parallele jobs
 opts['n_family']=1000 #number of family
+opts['p_dis']=0.1 #prevalence
 
 ######################
 #1.0. log the start time
@@ -140,76 +141,53 @@ dep = ''
 cmd = ['[ ! -f {outputDir}/runmake_{jobName}_time.log ] && echo > {outputDir}/runmake_{jobName}_time.log; date | awk \'{{print "Simulations pipeline\\n\\nstart: "$$0}}\' >> {outputDir}/runmake_{jobName}_time.log'.format(**opts)]
 makeJob('local', tgt, dep, cmd)
 
+opts["exclude"] = "--exclude=dl3601"
+opts["param"] = "--time=1-12:0 {exclude}".format(**opts) #indicate this is a quick job
 ######################
 #1.1. run simulations by calling mainSim.R
 ######################
 inputFilesOK = []
-opts['p_dis']=0.1 #prevalence
-opts['riskVariant'] = '\"c(18,25,47)\"' #super rare
-opts['family_strct'] = '\"2g.2a.2u\"' #family structure
-for i in numpy.linspace(1,2.8,num=15):
+#family_strct=2g.3a.1u
+opts['family_strct'] = '\"2g.3a.1u\"' #family structure
+opts['f'] = 0.01 #rare
+for i in numpy.arange(1,2.5,0.1):
 	for j in range(opts['n_ite']):
 		opts['r'] = i
 		tgt = 'callmainSim_{seed}.OK'.format(**opts)
 		inputFilesOK.append(tgt)
 		dep = ''
-		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} n_family {n_family} p_dis {p_dis} risk.variant {riskVariant} family_strct {family_strct} < mainSim.R > mainSim_{n_rep}_{r}_{n_family}_{p_dis}_{riskVariant}_{family_strct}.Rout{seed} 2>&1'.format(**opts)]
+		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} p_dis {p_dis} family_strct {family_strct} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{p_dis}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
 		makeJob(opts['launchMethod'], tgt, dep, cmd)
 		opts['seed'] += 1	
 
-opts['p_dis']=0.3 #prevalence
-opts['riskVariant'] = '\"c(18,25,47)\"' #super rare
-for i in numpy.linspace(1,2.8,num=15):
+opts['f'] = 0.05 #less rare
+for i in numpy.arange(1,2.0,0.1):
 	for j in range(opts['n_ite']):
 		opts['r'] = i
 		tgt = 'callmainSim_{seed}.OK'.format(**opts)
 		inputFilesOK.append(tgt)
 		dep = ''
-		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} n_family {n_family} p_dis {p_dis} risk.variant {riskVariant} family_strct {family_strct} < mainSim.R > mainSim_{n_rep}_{r}_{n_family}_{p_dis}_{riskVariant}_{family_strct}.Rout{seed} 2>&1'.format(**opts)]
+		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} p_dis {p_dis} family_strct {family_strct} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{p_dis}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
 		makeJob(opts['launchMethod'], tgt, dep, cmd)
 		opts['seed'] += 1	
 
-# opts['riskVariant'] = '\"c(4,15,32)\"' #rare
-# for i in numpy.linspace(1,2.3,num=15):
-# 	for j in range(opts['n_ite']):
-# 		opts['r'] = i
-# 		tgt = 'callmainSim_{seed}.OK'.format(**opts)
-# 		inputFilesOK.append(tgt)
-# 		dep = ''
-# 		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} n_family {n_family} p_dis {p_dis} risk.variant {riskVariant} family_strct {family_strct} < mainSim.R > mainSim_{n_rep}_{r}_{n_family}_{p_dis}_{riskVariant}_{family_strct}.Rout{seed} 2>&1'.format(**opts)]
-# 		makeJob(opts['launchMethod'], tgt, dep, cmd)
-# 		opts['seed'] += 1	
-
-opts['p_dis']=0.1 #prevalence
-opts['riskVariant'] = '\"c(4,16,42)\"' #common
-for i in numpy.linspace(1,1.6,num=15):
+opts['f'] = 0.20 #common
+for i in numpy.arange(1,1.5,0.1):
 	for j in range(opts['n_ite']):
 		opts['r'] = i
 		tgt = 'callmainSim_{seed}.OK'.format(**opts)
 		inputFilesOK.append(tgt)
 		dep = ''
-		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} n_family {n_family} p_dis {p_dis} risk.variant {riskVariant} family_strct {family_strct} < mainSim.R > mainSim_{n_rep}_{r}_{n_family}_{p_dis}_{riskVariant}_{family_strct}.Rout{seed} 2>&1'.format(**opts)]
+		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} p_dis {p_dis} family_strct {family_strct} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{p_dis}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
 		makeJob(opts['launchMethod'], tgt, dep, cmd)
-		opts['seed'] += 1	
-
-opts['p_dis']=0.3 #prevalence
-opts['riskVariant'] = '\"c(4,16,42)\"' #common
-for i in numpy.linspace(1,1.6,num=15):
-	for j in range(opts['n_ite']):
-		opts['r'] = i
-		tgt = 'callmainSim_{seed}.OK'.format(**opts)
-		inputFilesOK.append(tgt)
-		dep = ''
-		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} n_family {n_family} p_dis {p_dis} risk.variant {riskVariant} family_strct {family_strct} < mainSim.R > mainSim_{n_rep}_{r}_{n_family}_{p_dis}_{riskVariant}_{family_strct}.Rout{seed} 2>&1'.format(**opts)]
-		makeJob(opts['launchMethod'], tgt, dep, cmd)
-		opts['seed'] += 1	
+		opts['seed'] += 1
 
 ######################
 #1.2. combine the result
 ######################
 tgt = 'pasteResults.OK'
 dep = ' '.join(inputFilesOK)
-cmd = ['Rscript paste_mainSim_results.R']
+cmd = ['python paste_mainSim_results.py']
 makeJob('local', tgt, dep, cmd)
 
 ######################
