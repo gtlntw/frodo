@@ -917,7 +917,7 @@ gene_family <- function(family_strct=family_strct.2g2c, n_family=100, haplotype.
 
 ##consider polygenic effect when generating family data
 ##3. simulate data using the new model
-gene_family_pe <- function(family_strct=family_strct_ped, n_family= 1000, p_dis=0.1, Beta=Beta) {
+gene_family_pe <- function(family_strct=family_strct_ped, n_family= 1000, p_dis=0.1, Beta=Beta, exact_affected=T) {
 	library(kinship2) #load kinship function to calculate kinship matrix
 	#get genotype matrix
 	n_haplo <- nrow(haplotype)
@@ -926,10 +926,18 @@ gene_family_pe <- function(family_strct=family_strct_ped, n_family= 1000, p_dis=
   data_family <- matrix(NA, nrow=n_family*n_family_member, ncol=(6+n_snp*2))
   tran_vec <- matrix(NA, nrow=n_family*n_family_member, ncol=3)
   affect_spec <- family_strct$affect-1 # afffect statuts
+  n_affect_spec <- sum(affect_spec) # number of affected
   haplotype.effect <- as.matrix(2- haplotype[, -(1:2)]) %*% Beta #precalculate to speed up
   #the strategy is generate the whole family and check affected status if fail then restart from the first individual
   data_family.idx <- 1 #index of the current family member being generated
   n_family.idx <- 1 #index of how many families have been generated
+  
+  #generate exact affected members or just the total number of affected
+  if(exact_affected == T) {
+    criteria <- expression(all(affect_status==affect_spec))
+  } else {
+    criteria <- expression(n_affect == n_affect_spec)
+  }
   
   ##parameters to generate phenotype
   pe_var <- 0.5 #p*(1-p)/(exp(2*p)/(exp(p)+1)^4) to achieve 50% heritability
@@ -961,13 +969,14 @@ gene_family_pe <- function(family_strct=family_strct_ped, n_family= 1000, p_dis=
 		p_star <- MASS::mvrnorm(1, mu=mu, Sigma=PE_E)
 		(p <- plogis(p_star))
 		(affect_status <- rbinom(rep(1,n_family_member), 1, p))
+		(n_affect <- sum(affect_status))
 		
-		if(all(affect_status==affect_spec)) {
+		if(eval(criteria)) {
 	    #save the haplotype file
 	    letter.idx <- 1 #indicator used in the transmission vector
 	    for(i in 1:n_family_member) {
 	      #store genope and transmission vector
-	      data_family[data_family.idx, ] <- unlist(c(n_family.idx, family_strct[i,2:6], haplotype[family.haplo[i,1],-c(1:2)], haplotype[family.haplo[i,2],-c(1:2)]))
+	      data_family[data_family.idx, ] <- unlist(c(n_family.idx, family_strct[i,2:5], affect_status[i] + 1, haplotype[family.haplo[i,1],-c(1:2)], haplotype[family.haplo[i,2],-c(1:2)]))
 	      if(family_strct$father[i]==0 & family_strct$mother[i]==0) { #if founder
 	        tran_vec[data_family.idx,] <- c(n_family.idx, LETTERS[letter.idx], LETTERS[letter.idx+1])
 	        letter.idx <- letter.idx + 2
@@ -991,7 +1000,14 @@ gene_family_pe <- function(family_strct=family_strct_ped, n_family= 1000, p_dis=
 # Beta <- rep(0, length.out=50)
 # Beta[7] <- log(1) #effect size of OR=2
 # gene_family_pe(family_strct=family_strct_ped, n_family= 100, p_dis=0.1, Beta=Beta)
-
+##example
+if(FALSE) {
+	p_dis=0.30
+	n_family=1000
+	family_strct="2g.3a.1u" #2g.2a.2u, 2g.3a.1u, 2g.3a.1u
+	f=0.01
+	r=1
+}
 ##construct kinship matrix
 
 
@@ -1041,6 +1057,7 @@ family.test <- function(data=family_generated, f=risk.variant.id, nofounderpheno
   ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
   n_family <- max(data$data_family$family)
   n_family_member <- table(data$data_family$family)
+  n_snp <- (ncol(data$data_family)-6)/2
   #check if founder's haplotype carries any variant's with f < 0.1
   if(length(f)==1 & f[1] <1) { #support allele frequency or list of snps
     snp2look.idx <-  which(snp$FREQ1 < f) # snp to look for
@@ -1054,6 +1071,8 @@ family.test <- function(data=family_generated, f=risk.variant.id, nofounderpheno
   	"3" = function(tran_vec, carrier, affect) {(any(tran_vec[, c("h1","h2")] %in% carrier)*2-1)*(2*affect-3)} #both affected and unaffected by individual
   )
   
+  #if using lm.test then set to not testing founder in TRAP part
+  if(association.test==T) nofounderphenotype <- T
   
   #start looking at each family
   test.stat <- sapply(1:n_family, function(x) {
@@ -1194,15 +1213,19 @@ family.test <- function(data=family_generated, f=risk.variant.id, nofounderpheno
     Xsq <- -2*sum(log(p))
     p.val <- pchisq(Xsq, df = 2*length(p), lower.tail = FALSE)
 
-    #z-score method
-		z.association <- qnorm(1-p.value.association)
-    z <- qnorm(1-p.value)
-    z.p.val <- 2*pnorm(abs((z + z.association)/sqrt(2)), lower.tail = F)
-    w1 <- 1.6; w2 <- .4
-    z.weighted.p.val <- 2*pnorm(abs((w1*z + w2*z.association)/sqrt(w1^2+w2^2)), lower.tail = F)
+    #SKAT with only founders in formative families
+  	lm.idx.info <- which((data$data_family$father==0 & data$data_family$mother==0) & data$data_family$family %in% test.stat$family.idx)
+  	data.info.diploid <- hap2dip(data=list(data_family=data$data_family[lm.idx.info, ]), risk.variant.id=risk.variant.id, save.file=F)
+	  obj <- SKAT_Null_Model(data.info.diploid$ped$trait ~ 1, out_type="D")
+    p.value.info.association <- SKAT(as.matrix(data.info.diploid$geno[, -c(1:2)]), obj, weights.beta = c(1,1), r.corr = 1)$p.value
+		#fisher's method
+    p.info <- c(p.value, p.value.info.association)
+    Xsq.info <- -2*sum(log(p.info))
+    p.val.info <- pchisq(Xsq.info, df = 2*length(p.info), lower.tail = FALSE)
+
     
     return(list(Xsq = Xsq, p.value = p.val, p.value.trap = p.value, p.value.association = p.value.association,
-  		 z.p.value=z.p.val, z.weighted.p.value = z.weighted.p.val))
+  		 Xsq.info = Xsq.info, p.value.info = p.val.info, p.value.info.association = p.value.info.association))
   }
 
   list(final.test.stat=final.test.stat, sum_e=sum(test.stat$mean), se=se, mean_observed=mean(test.stat$observed), mean_mean=mean(test.stat$mean), mean_var=mean(test.stat$var), p.value=p.value, n_info_family=length(test.stat$n_carrier))
@@ -1210,7 +1233,7 @@ family.test <- function(data=family_generated, f=risk.variant.id, nofounderpheno
 # family.test()
 
 ##family test in TRAFIC spirit
-family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nofounderpheno=F, test_sq=F, association.test=F) {
+family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nofounderphenotype=F, test_sq=F, association.test=F) {
   ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
   n_family <- max(data$data_family$family)
   n_family_member <- table(data$data_family$family)
@@ -1219,6 +1242,8 @@ family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nof
     snp2look.idx <-  which(snp$FREQ1 < f) # snp to look for
   } else(snp2look.idx <-  f)
   
+  #if using lm.test then set to not testing founder in TRAP part
+  if(association.test==T) nofounderphenotype <- T
   
   #start looking at each family
   data.family <- lapply(1:n_family, function(x) {
@@ -1234,7 +1259,7 @@ family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nof
     person <- c(0,family_strct[,2]) #adding 0 to check if the chromosome if from missing founder
     
     #number of unique haplotype among affected family members
-    if(nofounderpheno==F) {
+    if(nofounderphenotype==F) {
       affect_id <- which(affect==2)
     }else {
       affect_id <- which(affect[-c(1:2)]==2)+2
@@ -1314,7 +1339,12 @@ family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nof
       #       ,ifelse(sum(h2[2, snp2look.idx]==1)>0, tran_vec[2, "h2"], NA) #check second founder's h2
       #     )
       n_carrier_family[family.idx] <<- n_carrier <- sum(!is.na(carrier)) #no. of carrier haplotypes
+      
+      if(n_carrier >= 1) {
+      	c(family.idx=family.idx)
+      }
     })
+    test.stat <- data.frame(do.call(rbind, test.stat))
     
     #SKAT with all founders only
   	lm.idx <- which(data$data_family$father==0 & data$data_family$mother==0)
@@ -1327,15 +1357,19 @@ family.test.trafic.ext <- function(data=family_generated, f=risk.variant.id, nof
     Xsq <- -2*sum(log(p))
     p.val <- pchisq(Xsq, df = 2*length(p), lower.tail = FALSE)
 
-    #z-score method
-		z.association <- qnorm(1-p.value.association)
-    z <- qnorm(1-p.value)
-    z.p.val <- 2*pnorm(abs((z + z.association)/sqrt(2)), lower.tail = F)
-    w1 <- 1.6; w2 <- .4
-    z.weighted.p.val <- 2*pnorm(abs((w1*z + w2*z.association)/sqrt(w1^2+w2^2)), lower.tail = F)
-      
+    #SKAT with only founders in formative families
+  	lm.idx.info <- which((data$data_family$father==0 & data$data_family$mother==0) & (data$data_family$family %in% test.stat$family.idx))
+  	data.info.diploid <- hap2dip(data=list(data_family=data$data_family[lm.idx.info, ]), risk.variant.id=risk.variant.id, save.file=F)
+	  obj <- SKAT_Null_Model(data.info.diploid$ped$trait ~ 1, out_type="D")
+    p.value.info.association <- SKAT(as.matrix(data.info.diploid$geno[, -c(1:2)]), obj, weights.beta = c(1,1), r.corr = 1)$p.value
+		
+    #fisher's method
+    p.info <- c(p.value, p.value.info.association)
+    Xsq.info <- -2*sum(log(p.info))
+    p.val.info <- pchisq(Xsq.info, df = 2*length(p.info), lower.tail = FALSE)
+
     return(list(Xsq = Xsq, p.value = p.val, p.value.trafic_ext = p.value, p.value.association = p.value.association,
-  		 z.p.value=z.p.val, z.weighted.p.value = z.weighted.p.val))
+  		 Xsq.info = Xsq.info, p.value.info = p.val.info, p.value.info.association = p.value.info.association))
   }
 
   
@@ -1407,6 +1441,7 @@ family.maf <- function(data=family_generated, f=risk.variant.id, shared_nonshare
 # family.maf()
 
 
+##impute the phasing of risk variant in families with founders
 ##test for TRAP 2c conditional on at least one carrier chromosome observed in the offspings
 family.test.nofounder <- function(data=family_generated_2c, f=risk.variant.id) {
   ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
@@ -1509,147 +1544,174 @@ family.test.nofounder <- function(data=family_generated_2c, f=risk.variant.id) {
 
 ##test for TRAP based on imputation of the haplotype carrier status
 ##assuming the IBD status is known
-family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.variant.id, method, null.maf=NULL) {
+family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.variant.id, method="trap", null.maf=NULL, sample.f=F, no.pop=F, pop.f.off=0) {
   #check
   stopifnot(method %in% c("trap", "trafic"))
   
   ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
   n_family <- max(data$data_family$family)
   n_family_member <- table(data$data_family$family)
+  n_snp <- (ncol(data$data_family)-6)/2
   #check if founder's haplotype carries any variant's with f < 0.1
   if(length(f)==1 & f[1] <1) { #support allele frequency or list of snps
     snp2look.idx <-  which(snp$FREQ1 < f) # snp to look for
   } else(snp2look.idx <-  f)
   
-  match.pattern.list <- list() #to store if the haplotype carrying a risk variant on multiple affected
-  haplo.unique.count <- list()
-  for(family.idx in 1:n_family) {
-    current_row=sum(n_family_member[1:family.idx]) - n_family_member[family.idx]
-    ##assign transmission vector based on IBD
-    #create a IBD matrix n_ind*n_ind
-    IBD.matrix <- matrix(NA, nrow=n_family_member[family.idx], ncol=n_family_member[family.idx])
-    for(a in 1:n_family_member[family.idx]) {
-      for(b in 1:n_family_member[family.idx]) {
-        IBD.matrix[a,b] <- sum(data$tran_vec[a, c("h1","h2")] %in% data$tran_vec[b, c("h1","h2")])
-      }
-    }
-    #assign a suitable transmission, not trivial to code up the algorithm assume is known for now
-    tran_vec <- data$tran_vec[(current_row+1):(current_row+n_family_member[family.idx]),]
-    ##tally the (un)ambiguous carrier haplotype
-    h1 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),7:(6+n_snp)] #the first haplotype
-    h2 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),-c(1:(6+n_snp))] #the second haplotype
-    #observed allele count for each individual
-    obersed.allele <- vector("numeric", n_family_member[family.idx])
-    for(a in 1:n_family_member[family.idx]) {
-      obersed.allele[a] <- (h1[a, snp2look.idx]==1) + (h2[a, snp2look.idx]==1)
-    }
-#     (tran_vec[, c("h1","h2")])
-    #go over every possible haplotype carrier configuration with early terminatation rule
-    #need to determine the number of founder haplotypes, assume know for now
-    #can use dynamic programming, skip for now
-    match.pattern <- NULL
-    #the number of each unique haplotype occured on affecteds
-    haplo.count <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")]), LETTERS[1:4]))
-    #save the number of each observed unique haplotype occured on affecteds for later use, i.e. can be A,B,D
-    haplo.unique.count[[family.idx]] <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")])))
-    for(a in 0:as.numeric(haplo.count[1]>0)) { #only loop through observed haplotypes
-      for(b in 0:as.numeric(haplo.count[2]>0)) {
-        for(c in 0:as.numeric(haplo.count[3]>0)) {
-          for(d in 0:as.numeric(haplo.count[4]>0)) {
-            allele.count <- as.numeric(apply(tran_vec[ ,c("h1","h2")], 1, function(x) {
-                temp <- c(0,0,0,0)
-                temp[match(x, c(LETTERS[1:4]))] <- 1
-                sum(c(a,b,c,d)*temp)
-                }
-              ))
-            
-#             print(c(allele.count,obersed.allele,identical(allele.count,obersed.allele)))
-            result <- haplo.count * c(a,b,c,d)
-            result[which(haplo.count==0)] <- -9 #replace non-obsered haplotype with -9
-            if(identical(allele.count,obersed.allele)) match.pattern <- rbind(match.pattern, result)
-          }
-        }
-      }
-    }
-    colnames(match.pattern) <- LETTERS[1:4]
-    match.pattern.list[[family.idx]] <-  match.pattern
-  }
+  match.pattern.list.snps <- list() #to store if the haplotype carrying a risk variant on multiple affected across snps
+  count.kskn.sum.snps <- list()
+  count.cscn.sum.snps <- list()
+  haplo.unique.count.snps <- list()
+  u.list.snps <- list()
+  for(i in 1:length(snp2look.idx)) {
+  	snp2look <- snp2look.idx[i]
+ 	  match.pattern.list <- list() #to store if the haplotype carrying a risk variant on multiple affected
+	  haplo.unique.count <- list()
+	  for(family.idx in 1:n_family) {
+	    current_row=sum(n_family_member[1:family.idx]) - n_family_member[family.idx]
+	    ##assign transmission vector based on IBD
+	    #create a IBD matrix n_ind*n_ind
+	    IBD.matrix <- matrix(NA, nrow=n_family_member[family.idx], ncol=n_family_member[family.idx])
+	    for(a in 1:n_family_member[family.idx]) {
+	      for(b in 1:n_family_member[family.idx]) {
+	        IBD.matrix[a,b] <- sum(data$tran_vec[a, c("h1","h2")] %in% data$tran_vec[b, c("h1","h2")])
+	      }
+	    }
+	    #assign a suitable transmission, not trivial to code up the algorithm assume is known for now
+	    tran_vec <- data$tran_vec[(current_row+1):(current_row+n_family_member[family.idx]),]
+	    ##tally the (un)ambiguous carrier haplotype
+	    h1 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),7:(6+n_snp)] #the first haplotype
+	    h2 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),-c(1:(6+n_snp))] #the second haplotype
+	    #observed allele count for each individual
+	    obersed.allele <- vector("numeric", n_family_member[family.idx])
+	    for(a in 1:n_family_member[family.idx]) {
+	      obersed.allele[a] <- (h1[a, snp2look]==1) + (h2[a, snp2look]==1)
+	    }
+	#     (tran_vec[, c("h1","h2")])
+	    #go over every possible haplotype carrier configuration with early terminatation rule
+	    #need to determine the number of founder haplotypes, assume know for now
+	    #can use dynamic programming, skip for now
+	    match.pattern <- NULL
+	    #the number of each unique haplotype occured on affecteds
+	    haplo.count <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")]), LETTERS[1:4]))
+	    #save the number of each observed unique haplotype occured on affecteds for later use, i.e. can be A,B,D
+	    haplo.unique.count[[family.idx]] <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")])))
+	    for(a in 0:as.numeric(haplo.count[1]>0)) { #only loop through observed haplotypes
+	      for(b in 0:as.numeric(haplo.count[2]>0)) {
+	        for(c in 0:as.numeric(haplo.count[3]>0)) {
+	          for(d in 0:as.numeric(haplo.count[4]>0)) {
+	            allele.count <- as.numeric(apply(tran_vec[ ,c("h1","h2")], 1, function(x) {
+	                temp <- c(0,0,0,0)
+	                temp[match(x, c(LETTERS[1:4]))] <- 1
+	                sum(c(a,b,c,d)*temp)
+	                }
+	              ))
+	            
+	#             print(c(allele.count,obersed.allele,identical(allele.count,obersed.allele)))
+	            result <- haplo.count * c(a,b,c,d)
+	            result[which(haplo.count==0)] <- -9 #replace non-obsered haplotype with -9
+	            if(identical(allele.count,obersed.allele)) match.pattern <- rbind(match.pattern, result)
+	          }
+	        }
+	      }
+	    }
+	    colnames(match.pattern) <- LETTERS[1:4]
+	    match.pattern.list[[family.idx]] <-  match.pattern
+	  }
+	  
+	  ##Use EM to impute the carrier haplotype
+	  #get ks, kn for unambuiguous families
+	  count.kskn <- lapply(match.pattern.list, function(x) if(nrow(x)==1) {
+	    return(c(ks=sum(x>1), kn=sum(x==1))) #count of kc, knc for each family
+	  })
+	  count.kskn.sum <- colSums(do.call(rbind, count.kskn))
+	  #total number of cn, cs
+	  count.cscn <- sapply(1:n_family, function(family.idx) {
+	    c(cs=sum(haplo.unique.count[[family.idx]]>1), cn=sum(haplo.unique.count[[family.idx]]==1))
+	  })
+	  count.cscn.sum <- rowSums(count.cscn)
+	  #count u and the number of kn ks cn cs in different configurations
+	  u.list <- list()
+	  for(a in 1:n_family) {
+	    n.row.config <- nrow(match.pattern.list[[a]])
+	    if(n.row.config > 1) {
+	      result <- NULL
+	      for(b in 1:n.row.config) {
+	        family.match.pattern <- match.pattern.list[[a]][b,] #current match pattern
+	        ks=sum(family.match.pattern>1); kn=sum(family.match.pattern==1) #count ks kn
+	        result <- rbind(result, as.vector(c(family=a, config=b, family.match.pattern, ks, kn, t(count.cscn[,a]))))
+	      }
+	      colnames(result) <- c("family", "config", "A", "B", "C", "D", "ks", "kn", "cs", "cn")
+	      u.list <- c(u.list ,list(as.data.frame(result)))
+	    }
+	  }	  
+	  
+		match.pattern.list.snps[[i]] <- match.pattern.list
+	  count.kskn.sum.snps[[i]] <- count.kskn.sum
+	  count.cscn.sum.snps[[i]] <- count.cscn.sum
+	  u.list.snps[[i]] <- u.list
+	  haplo.unique.count.snps[[i]] <- haplo.unique.count
+  }	
 
-  ##Use EM to impute the carrier haplotype
-  #get ks, kn for unambuiguous families
-  count.kskn <- lapply(match.pattern.list, function(x) if(nrow(x)==1) {
-    return(c(ks=sum(x>1), kn=sum(x==1))) #count of kc, knc for each family
-  })
-  count.kskn.sum <- colSums(do.call(rbind, count.kskn))
-  #total number of cn, cs
-  count.cscn <- sapply(1:n_family, function(family.idx) {
-    c(cs=sum(haplo.unique.count[[family.idx]]>1), cn=sum(haplo.unique.count[[family.idx]]==1))
-  })
-  count.cscn.sum <- rowSums(count.cscn)
-  #count u and the number of kn ks cn cs in different configurations
-  u.list <- list()
-  for(a in 1:n_family) {
-    n.row.config <- nrow(match.pattern.list[[a]])
-    if(n.row.config > 1) {
-      result <- NULL
-      for(b in 1:n.row.config) {
-        family.match.pattern <- match.pattern.list[[a]][b,] #current match pattern
-        ks=sum(family.match.pattern>1); kn=sum(family.match.pattern==1) #count ks kn
-        result <- rbind(result, as.vector(c(family=a, config=b, family.match.pattern, ks, kn, t(count.cscn[,a]))))
-      }
-      colnames(result) <- c("family", "config", "A", "B", "C", "D", "ks", "kn", "cs", "cn")
-      u.list <- c(u.list ,list(as.data.frame(result)))
-    }
-  }
 #   colnames(u.list) <- c("family", "config", "A", "B", "C", "D", "ks", "kn", "cs", "cn")
 # match.pattern.list
   #assuming only one locus only for now
-  EM <- function(count.kskn.sum=count.kskn.sum, count.cscn.sum=count.cscn.sum) {
-    #initialization
-    ks <- count.kskn.sum[1] #known shared variants  (variants occured On ibd 2 or more)
-    kn <- count.kskn.sum[2] #known non-shared variants (variants occured on ibd 0)
-    cs <- count.cscn.sum[1] # total number of shared chromosomes
-    cn <- count.cscn.sum[2] #total number of non-shared chromosomes
-          
-    pn.init <- kn/(cn) #probability of rare variant on non-shared chromosome
-    pn.cur <- ifelse(pn.init==0, runif(1), pn.init)
-    ps.init <- ks/(cs) #probability of rare variant on shared chromosome
-    ps.cur <- ifelse(ps.init==0, runif(1), ps.init)
-    delta <- Inf
-    iter <- 1
+  EM <- function(count.kskn.sum.snps=count.kskn.sum.snps, count.cscn.sum.snps=count.cscn.sum.snps) {
     
-    while(delta > 10^-6) {
-      #E step
-      #us <- u*ps.cur/(pn.cur+ps.cur)
-      #un <- u*pn.cur/(pn.cur+ps.cur)
-      if(!length(u.list)==0) { #prevent the error when there's no ambiguous famlies
-        for(a in 1:length(u.list)) {
-          temp.prob <- with(u.list[[a]], ps.cur^ks*pn.cur^kn*(1-ps.cur)^(cs-ks)*(1-pn.cur)^(cn-kn)) #go through u.list and calculate the prob. for each config
-          sum.prob <- sum(temp.prob)
-          u.list[[a]]$prob <- temp.prob/sum.prob
-        }
-        u <- do.call(rbind, u.list)
-        us <- sum(with(u, ks*prob)) #update us
-        un <- sum(with(u, kn*prob)) #update un
-      }else {
-        u <- us <- un <- 0
-      }
-      #M-step
-      pn.new <- (kn+un)/cn
-      ps.new <- (ks+us)/cs
-      #print(c(mu.new, sigma2.new, f.new, cor.factor, optim.result$value))
-      
-      #check convergence
-      delta <- max(abs(pn.cur - pn.new), abs(ps.cur - ps.new))
-      pn.cur <- pn.new
-      ps.cur <- ps.new
-      
-#       print(c(pn.cur, ps.cur, iter))
-      iter <- iter + 1
-#       print(iter)
-    }
-    #c(pn.init, ps.init)
-    c(ps.cur=ps.cur, pn.cur=pn.cur)
+  	n_snp <- length(count.kskn.sum.snps)
+  	result.list <- list()
+  	
+  	for(i in 1:n_snp) {
+  		count.kskn.sum <- count.kskn.sum.snps[[i]]
+  		count.cscn.sum <- count.cscn.sum.snps[[i]]
+  		u.list <- u.list.snps[[i]]
+  		
+	   	#initialization
+	    ks <- count.kskn.sum[1] #known shared variants  (variants occured On ibd 2 or more)
+	    kn <- count.kskn.sum[2] #known non-shared variants (variants occured on ibd 0)
+	    cs <- count.cscn.sum[1] # total number of shared chromosomes
+	    cn <- count.cscn.sum[2] #total number of non-shared chromosomes
+	          
+	    pn.init <- kn/(cn) #probability of rare variant on non-shared chromosome
+	    pn.cur <- ifelse(pn.init==0, runif(1), pn.init)
+	    ps.init <- ks/(cs) #probability of rare variant on shared chromosome
+	    ps.cur <- ifelse(ps.init==0, runif(1), ps.init)
+	    delta <- Inf
+	    iter <- 1
+	    
+	    while(delta > 10^-6) {
+	      #E step
+	      #us <- u*ps.cur/(pn.cur+ps.cur)
+	      #un <- u*pn.cur/(pn.cur+ps.cur)
+	      if(!length(u.list)==0) { #prevent the error when there's no ambiguous famlies
+	        for(a in 1:length(u.list)) {
+	          temp.prob <- with(u.list[[a]], ps.cur^ks*pn.cur^kn*(1-ps.cur)^(cs-ks)*(1-pn.cur)^(cn-kn)) #go through u.list and calculate the prob. for each config
+	          sum.prob <- sum(temp.prob)
+	          u.list[[a]]$prob <- temp.prob/sum.prob
+	        }
+	        u <- do.call(rbind, u.list)
+	        us <- sum(with(u, ks*prob)) #update us
+	        un <- sum(with(u, kn*prob)) #update un
+	      }else {
+	        u <- us <- un <- 0
+	      }
+	      #M-step
+	      pn.new <- (kn+un)/cn
+	      ps.new <- (ks+us)/cs
+	      #print(c(mu.new, sigma2.new, f.new, cor.factor, optim.result$value))
+	      
+	      #check convergence
+	      delta <- max(abs(pn.cur - pn.new), abs(ps.cur - ps.new))
+	      pn.cur <- pn.new
+	      ps.cur <- ps.new
+	      
+	#       print(c(pn.cur, ps.cur, iter))
+	      iter <- iter + 1
+	#       print(iter)
+	    }
+	    #c(pn.init, ps.init)
+	    result.list[[i]] <- c(ps.cur=ps.cur, pn.cur=pn.cur)
+  	}
+  	result.list
   }
 
   ##family test in TRAFIC spirit take input of imputed dataset
@@ -1693,43 +1755,81 @@ family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.varian
   # family.test.trafic.ext.impute()
 
   ##test for 3c only use infor from children
-  family.test.trap.impute <- function(ps, pn) {
-    ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-    #extract info from unambiguous family
-    data.family.list <- list()
-    for(family.idx in 1:length(match.pattern.list)) {
-      if(nrow(match.pattern.list[[family.idx]])==1) {
-        match.pattern <- match.pattern.list[[family.idx]][which(match.pattern.list[[family.idx]]!=-9)]
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
+  family.test.trap.impute <- function(pspn) {
+  	
+  	n_snp <- length(pspn)
+  	data.family.list.snps <- list()
+    for(i in 1:n_snp) {
+	  	ps <- pspn[[i]][1]; pn <- pspn[[i]][2]
+	  	u.list <- u.list.snps[[i]]
+	  	match.pattern.list <- match.pattern.list.snps[[i]]
+	  	haplo.unique.count <- haplo.unique.count.snps[[i]]
+	  	##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
+	    #extract info from unambiguous family
+	    data.family.list <- list()
+	    for(family.idx in 1:length(match.pattern.list)) {
+	      if(nrow(match.pattern.list[[family.idx]])==1) {
+	        match.pattern <- match.pattern.list[[family.idx]][which(match.pattern.list[[family.idx]]!=-9)]
+	        data.family.list[[family.idx]] <- data.frame(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1)))
+	      }
+	    }
+	    
+	    #extract info from ambiguous family
+	    #update the configuration probability
+	    if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
+	      for(a in 1:length(u.list)) {
+	        temp.prob <- with(u.list[[a]], ps^ks*pn^kn*(1-ps)^(cs-ks)*(1-pn)^(cn-kn)) #go through u.list and calculate the prob. for each config
+	        sum.prob <- sum(temp.prob)
+	        prob <- temp.prob/sum.prob #config probability
+	        sample.config <- sample(1:nrow(u.list[[a]]), 1, prob=prob) #which config
+	        match.pattern <- u.list[[a]][sample.config,c("A","B","C","D")]
+	        match.pattern <- match.pattern[which(match.pattern!=-9)]
+	        
+	        family.idx <- u.list[[a]]$family[1]
+	        
+	        data.family.list[[family.idx]] <- data.frame(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=as.vector(match.pattern>=1))))
+	      }
+	    }
+	    data.family.list.snps[[i]] <- data.family.list
     }
-    
-    #extract info from ambiguous family
-    #update the configuration probability
-    if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-      for(a in 1:length(u.list)) {
-        temp.prob <- with(u.list[[a]], ps^ks*pn^kn*(1-ps)^(cs-ks)*(1-pn)^(cn-kn)) #go through u.list and calculate the prob. for each config
-        sum.prob <- sum(temp.prob)
-        prob <- temp.prob/sum.prob #config probability
-        sample.config <- sample(1:nrow(u.list[[a]]), 1, prob=prob) #which config
-        match.pattern <- u.list[[a]][sample.config,c("A","B","C","D")]
-        match.pattern <- match.pattern[which(match.pattern!=-9)]
-        
-        family.idx <- u.list[[a]]$family[1]
-        
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
+  	
+  	#combine data.family.list.snps into data.family.list
+  	data.family.list <- data.family.list.snps[[1]] #copy the info for the first snps as backbone
+  	for(i in 1:n_family) {
+  	  for(j in 1:length(snp2look.idx)) {
+  	    data.family.list[[i]]$carrier <- ((data.family.list[[i]]$carrier + data.family.list.snps[[j]][[i]]$carrier) > 0) + 0 
+  	  }
+  	}
+  	
+  	#whether use pop.f or sample.f to impute
+  	if(no.pop==F) { #variant found in the database
+  	  pop.f.temp <- risk.haplo.f
+  	} else if(no.pop==T) { #variant not found in the database
+  	  if(sample.f==T) {  #use sample allele frequency 
+  	    pop.f.temp <- mean(do.call(rbind, data.family.list)$carrier)
+  	  } else {
+  	    pop.f.temp <- length(snp2look.idx)*0.001 #assume f=0.001 and add up all variants of interests
+  	  }
+  	}
+  	  
+   	
     #start looking at each family
     test.stat <- sapply(data.family.list, function(x) {
+      carrier_status <- x[,2]
       n_founder <- 2
-      n_carrier <- sum(x[,2]) #no. of carrier haplotypes
-      if(!(n_carrier==0)) { #skip families with 0 carrier haplotypes in sibpair
-        observed <- sum(x[,1] * x[, 2])
+      n_missing_founder <- 2*n_founder - length(carrier_status)
+      n_carrier <- sum(carrier_status) #no. of carrier haplotypes
+      #impute the missing founder haplotype 
+      impute.prob <- pop.f.temp*(1 + pop.f.off/100)
+      founder.carrier.impute <- rbinom(n = 1, size = n_missing_founder, prob = impute.prob)
+      founder.carrier.impute <- founder.carrier.impute + n_carrier
+      
+      
+      if(!(founder.carrier.impute==0)) { #skip families with 0 carrier haplotypes in sibpair
+        observed <- sum(x[,1] * carrier_status)
         
         #calculate expectation and variance
-        n_unique_carrier <- sum(x[,2]==1)
+        n_unique_carrier <- founder.carrier.impute
         founder <- t(combn(LETTERS[1:(2*n_founder)], n_unique_carrier)) #use minimum carrier haplotype in sibpair as an estimate for the number of founder's carrier haplotypes
         S <- apply(founder, 1, function(y) {
           carrier <- as.numeric(rownames(x) %in% y) #founder's haplotype
@@ -1740,8 +1840,7 @@ family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.varian
         )
         
         #       print(S)
-        S <- S[which(S!=0)] #only count the configuration when there is at least one variant observed in the sibpair
-        c(observed=observed, mean=mean(S), var=sum((S-mean(S))^2)/length(S), n_carrier=n_carrier, n_unique_carrier=n_unique_carrier)
+        c(observed=observed, mean=mean(S), var=sum((S-mean(S))^2)/length(S), n_carrier=n_carrier, n_missing_founder=n_missing_founder, founder.carrier.impute=founder.carrier.impute, n_unique_carrier=n_unique_carrier)
       }
     }
     )
@@ -1756,7 +1855,6 @@ family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.varian
     p.value <- 2*pnorm(abs(final.test.stat), lower=F) #p-value
     c(p.value=p.value, est=sum(test.stat$observed - test.stat$mean), var=se^2)
   }#family.test.trap.impute
-
 
   #choose trap or trafic to use
   impute.method <- switch(method, trap=family.test.trap.impute, trafic=family.test.trafic.ext.impute)
@@ -1770,10 +1868,10 @@ family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.varian
     if(!is.null(null.maf)) {
       pspn <- c(null.maf, null.maf)
     }else {
-      pspn <- EM(count.kskn.sum=count.kskn.sum, count.cscn.sum=count.cscn.sum)  
+      pspn <- EM(count.kskn.sum.snps=count.kskn.sum.snps, count.cscn.sum.snps=count.cscn.sum.snps)  
     }
     for(i in 1:D) {
-      mi.result <- impute.method(ps=pspn[1], pn=pspn[2])
+      mi.result <- impute.method(pspn=pspn)
       diff <- cbind(diff, mi.result[2])
       var <- cbind(var, mi.result[3])
     }
@@ -1785,628 +1883,6 @@ family.test.nofounder.impute <- function(data=family_generated_3c, f=risk.varian
   result <- MI()
   result
 }
-
-
-##test for TRAP based on imputaation of the haplotype carrier status
-##assuming the IBD status is known
-##do not aggregate the info of shared chromosomes
-family.test.nofounder.impute.noaggregate <- function(data=family_generated_3c, f=risk.variant.id, method, null.maf=NULL) {
-  #check
-  stopifnot(method %in% c("trap", "trafic"))
-  
-  ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-  n_family <- max(data$data_family$family)
-  n_family_member <- table(data$data_family$family)
-  #check if founder's haplotype carries any variant's with f < 0.1
-  if(length(f)==1 & f[1] <1) { #support allele frequency or list of snps
-    snp2look.idx <-  which(snp$FREQ1 < f) # snp to look for
-  } else(snp2look.idx <-  f)
-  
-  match.pattern.list <- list() #to store if the haplotype carrying a risk variant on multiple affected
-  haplo.unique.count <- list()
-  for(family.idx in 1:n_family) {
-    current_row=sum(n_family_member[1:family.idx]) - n_family_member[family.idx]
-    ##assign transmission vector based on IBD
-    #create a IBD matrix n_ind*n_ind
-    IBD.matrix <- matrix(NA, nrow=n_family_member[family.idx], ncol=n_family_member[family.idx])
-    for(a in 1:n_family_member[family.idx]) {
-      for(b in 1:n_family_member[family.idx]) {
-        IBD.matrix[a,b] <- sum(data$tran_vec[a, c("h1","h2")] %in% data$tran_vec[b, c("h1","h2")])
-      }
-    }
-    #assign a suitable transmission, not trivial to code up the algorithm assume is known for now
-    tran_vec <- data$tran_vec[(current_row+1):(current_row+n_family_member[family.idx]),]
-    ##tally the (un)ambiguous carrier haplotype
-    h1 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),7:(6+n_snp)] #the first haplotype
-    h2 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),-c(1:(6+n_snp))] #the second haplotype
-    #observed allele count for each individual
-    obersed.allele <- vector("numeric", n_family_member[family.idx])
-    for(a in 1:n_family_member[family.idx]) {
-      obersed.allele[a] <- (h1[a, snp2look.idx]==1) + (h2[a, snp2look.idx]==1)
-    }
-    #     (tran_vec[, c("h1","h2")])
-    #go over every possible haplotype carrier configuration with early terminatation rule
-    #need to determine the number of founder haplotypes, assume know for now
-    #can use dynamic programming, skip for now
-    match.pattern <- NULL
-    #the number of each unique haplotype occured on affecteds
-    haplo.count <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")]), LETTERS[1:4]))
-    #save the number of each observed unique haplotype occured on affecteds for later use, i.e. can be A,B,D
-    haplo.unique.count[[family.idx]] <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")])))
-    for(a in 0:as.numeric(haplo.count[1]>0)) { #only loop through observed haplotypes
-      for(b in 0:as.numeric(haplo.count[2]>0)) {
-        for(c in 0:as.numeric(haplo.count[3]>0)) {
-          for(d in 0:as.numeric(haplo.count[4]>0)) {
-            allele.count <- as.numeric(apply(tran_vec[ ,c("h1","h2")], 1, function(x) {
-              temp <- c(0,0,0,0)
-              temp[match(x, c(LETTERS[1:4]))] <- 1
-              sum(c(a,b,c,d)*temp)
-            }
-            ))
-            
-            #             print(c(allele.count,obersed.allele,identical(allele.count,obersed.allele)))
-            result <- haplo.count * c(a,b,c,d)
-            result[which(haplo.count==0)] <- -9 #replace non-obsered haplotype with -9
-            if(identical(allele.count,obersed.allele)) match.pattern <- rbind(match.pattern, result)
-          }
-        }
-      }
-    }
-    colnames(match.pattern) <- LETTERS[1:4]
-    match.pattern.list[[family.idx]] <-  match.pattern
-  }
-  
-  ##Use EM to impute the carrier haplotype
-  #get ks, kn for unambuiguous families
-  count.kskn <- lapply(match.pattern.list, function(x) if(nrow(x)==1) {
-    return(c(ks3=sum(x==3), ks2=sum(x==2), kn=sum(x==1))) #count of kc, knc for each family
-  })
-  count.kskn.sum <- colSums(do.call(rbind, count.kskn))
-  #total number of cn, cs
-  count.cscn <- sapply(1:n_family, function(family.idx) {
-    c(cs3=sum(haplo.unique.count[[family.idx]]==3),
-      cs2=sum(haplo.unique.count[[family.idx]]==2), cn=sum(haplo.unique.count[[family.idx]]==1))
-  })
-  count.cscn.sum <- rowSums(count.cscn)
-  #count u and the number of kn ks cn cs in different configurations
-  u.list <- list()
-  for(a in 1:n_family) {
-    n.row.config <- nrow(match.pattern.list[[a]])
-    if(n.row.config > 1) {
-      result <- NULL
-      for(b in 1:n.row.config) {
-        family.match.pattern <- match.pattern.list[[a]][b,] #current match pattern
-        ks3=sum(family.match.pattern==3)
-        ks2=sum(family.match.pattern==2)
-        kn=sum(family.match.pattern==1) #count ks kn
-        result <- rbind(result, as.vector(c(family=a, config=b, family.match.pattern, ks3, ks2, kn, t(count.cscn[,a]))))
-      }
-      colnames(result) <- c("family", "config", "A", "B", "C", "D", "ks3", "ks2", "kn", "cs3", "cs2", "cn")
-      u.list <- c(u.list ,list(as.data.frame(result)))
-    }
-  }
-  #   colnames(u.list) <- c("family", "config", "A", "B", "C", "D", "ks", "kn", "cs", "cn")
-  # match.pattern.list
-  #assuming only one locus only for now
-  EM <- function(count.kskn.sum=count.kskn.sum, count.cscn.sum=count.cscn.sum) {
-    #initialization
-    ks3 <- count.kskn.sum[1] #known shared variants  (variants occured On ibd 2 or more)
-    ks2 <- count.kskn.sum[2] #known shared variants  (variants occured On ibd 2 or more)
-    kn <- count.kskn.sum[3] #known non-shared variants (variants occured on ibd 0)
-    cs3 <- count.cscn.sum[1] # total number of shared chromosomes
-    cs2 <- count.cscn.sum[2] # total number of shared chromosomes
-    cn <- count.cscn.sum[3] #total number of non-shared chromosomes
-    
-    pn.init <- kn/(cn) #probability of rare variant on non-shared chromosome
-    pn.cur <- ifelse(pn.init==0, runif(1), pn.init)
-    ps3.init <- ks3/(cs3) #probability of rare variant on shared chromosome
-    ps3.cur <- ifelse(ps3.init==0, runif(1), ps3.init)
-    ps2.init <- ks2/(cs2) #probability of rare variant on shared chromosome
-    ps2.cur <- ifelse(ps2.init==0, runif(1), ps2.init)
-    delta <- Inf
-    iter <- 1
-    
-    while(delta > 10^-6) {
-      #E step
-      #us <- u*ps.cur/(pn.cur+ps.cur)
-      #un <- u*pn.cur/(pn.cur+ps.cur)
-      if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-        for(a in 1:length(u.list)) {
-          temp.prob <- with(u.list[[a]], ps3.cur^ks3*ps2.cur^ks2*pn.cur^kn*(1-ps3.cur)^(cs3-ks3)*(1-ps2.cur)^(cs2-ks2)*(1-pn.cur)^(cn-kn)) #go through u.list and calculate the prob. for each config
-          sum.prob <- sum(temp.prob)
-          u.list[[a]]$prob <- temp.prob/sum.prob
-        }
-        u <- do.call(rbind, u.list)
-        us3 <- sum(with(u, ks3*prob)) #update us
-        us2 <- sum(with(u, ks2*prob)) #update us
-        un <- sum(with(u, kn*prob)) #update un
-      }else{
-        u<-us3<-us2<-un<-0
-      }
-      #M-step
-      pn.new <- (kn+un)/cn
-      ps2.new <- (ks2+us2)/cs2
-      ps3.new <- (ks3+us3)/cs3
-      #print(c(mu.new, sigma2.new, f.new, cor.factor, optim.result$value))
-      
-      #check convergence
-      delta <- max(abs(pn.cur - pn.new), abs(ps2.cur - ps2.new), abs(ps3.cur - ps3.new))
-      pn.cur <- pn.new
-      ps2.cur <- ps2.new
-      ps3.cur <- ps3.new
-      
-      #       print(c(pn.cur, ps.cur, iter))
-      iter <- iter + 1
-      #       print(iter)
-    }
-    #c(pn.init, ps.init)
-    c(ps3.cur=ps3.cur, ps2.cur=ps2.cur, pn.cur=pn.cur)
-  }
-  
-  ##family test in TRAFIC spirit take input of imputed dataset
-  family.test.trafic.ext.impute <- function(ps3, ps2, pn) {
-    ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-    
-    #extract info from unambiguous family
-    data.family.list <- list()
-    for(family.idx in 1:length(match.pattern.list)) {
-      if(nrow(match.pattern.list[[family.idx]])==1) {
-        match.pattern <- match.pattern.list[[family.idx]][which(match.pattern.list[[family.idx]]!=-9)]
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    #extract info from ambiguous family
-    #update the configuration probability
-    if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-      for(a in 1:length(u.list)) {
-        temp.prob <- with(u.list[[a]], ps3^ks3*ps2^ks2*pn^kn*(1-ps3)^(cs3-ks3)*(1-ps2)^(cs2-ks2)*(1-pn)^(cn-kn)) #go through u.list and calculate the prob. for each config
-        sum.prob <- sum(temp.prob)
-        prob <- temp.prob/sum.prob #config probability
-        sample.config <- sample(1:nrow(u.list[[a]]), 1, prob=prob) #which config
-        match.pattern <- u.list[[a]][sample.config,c("A","B","C","D")]
-        match.pattern <- match.pattern[which(match.pattern!=-9)]
-        
-        family.idx <- u.list[[a]]$family[1]
-        
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    data.family <- as.data.frame(do.call(rbind, data.family.list))
-    #fit a logistic regression
-    glm.result <- summary(glm(carrier ~ haplotype_on_affect, family=binomial(link = "logit"), data=data.family))
-    
-    c(p.value=glm.result$coefficients["haplotype_on_affect", "Pr(>|z|)"], 
-      est=glm.result$coefficients["haplotype_on_affect", "Estimate"],
-      var=glm.result$coefficients["haplotype_on_affect", "Std. Error"]^2)
-  }
-  # family.test.trafic.ext.impute()
-  
-  ##test for 3c only use infor from children
-  family.test.trap.impute <- function(ps3, ps2, pn) {
-    ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-    #extract info from unambiguous family
-    data.family.list <- list()
-    for(family.idx in 1:length(match.pattern.list)) {
-      if(nrow(match.pattern.list[[family.idx]])==1) {
-        match.pattern <- match.pattern.list[[family.idx]][which(match.pattern.list[[family.idx]]!=-9)]
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    #extract info from ambiguous family
-    #update the configuration probability
-    if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-      for(a in 1:length(u.list)) {
-        temp.prob <- with(u.list[[a]], ps3^ks3*ps2^ks2*pn^kn*(1-ps3)^(cs3-ks3)*(1-ps2)^(cs2-ks2)*(1-pn)^(cn-kn)) #go through u.list and calculate the prob. for each config
-        sum.prob <- sum(temp.prob)
-        prob <- temp.prob/sum.prob #config probability
-        sample.config <- sample(1:nrow(u.list[[a]]), 1, prob=prob) #which config
-        match.pattern <- u.list[[a]][sample.config,c("A","B","C","D")]
-        match.pattern <- match.pattern[which(match.pattern!=-9)]
-        
-        family.idx <- u.list[[a]]$family[1]
-        
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    #start looking at each family
-    test.stat <- sapply(data.family.list, function(x) {
-      n_founder <- 2
-      n_carrier <- sum(x[,2]) #no. of carrier haplotypes
-      if(!(n_carrier==0)) { #skip families with 0 carrier haplotypes in sibpair
-        observed <- sum(x[,1] * x[, 2])
-        
-        #calculate expectation and variance
-        n_unique_carrier <- sum(x[,2]==1)
-        founder <- t(combn(LETTERS[1:(2*n_founder)], n_unique_carrier)) #use minimum carrier haplotype in sibpair as an estimate for the number of founder's carrier haplotypes
-        S <- apply(founder, 1, function(y) {
-          carrier <- as.numeric(rownames(x) %in% y) #founder's haplotype
-          #       print(carrier)
-          
-          IBD_haplotype_observed <- sum(x[,1] * carrier)
-        }
-        )
-        
-        #       print(S)
-        S <- S[which(S!=0)] #only count the configuration when there is at least one variant observed in the sibpair
-        c(observed=observed, mean=mean(S), var=sum((S-mean(S))^2)/length(S), n_carrier=n_carrier, n_unique_carrier=n_unique_carrier)
-      }
-    }
-    )
-    test.stat <- data.frame(do.call(rbind, test.stat))
-    
-    v <- test.stat$var
-    se <- sqrt(sum(v))
-    #e_avg <- mean(e) #overall expectation
-    final.test.stat <- sum(test.stat$observed - test.stat$mean)/se
-    
-    #c(t, n_test.data)#T and number of informative families
-    p.value <- 2*pnorm(abs(final.test.stat), lower=F) #p-value
-    c(p.value=p.value, est=sum(test.stat$observed - test.stat$mean), var=se^2)
-  }#family.test.trap.impute
-  
-  
-  #choose trap or trafic to use
-  impute.method <- switch(method, trap=family.test.trap.impute, trafic=family.test.trafic.ext.impute)
-  #apply test with multiple imputation
-  MI <- function() {
-    #initialization
-    diff <- NULL
-    var <- NULL
-    D <- 10
-    #run EM to estimate the allele frequency
-    if(!is.null(null.maf)) {
-      pspn <- c(null.maf, null.maf, null.maf)
-    }else {
-      pspn <- EM(count.kskn.sum=count.kskn.sum, count.cscn.sum=count.cscn.sum)  
-    }
-    for(i in 1:D) {
-      mi.result <- impute.method(ps3=pspn[1], ps2=pspn[2], pn=pspn[3])
-      diff <- cbind(diff, mi.result[2])
-      var <- cbind(var, mi.result[3])
-    }
-    
-    TD <- mean(diff)
-    VARD <- mean(var) + (1+1/D)*sum((diff-TD)^2)/(D-1)
-    c(pchisq(TD^2/VARD, df=1, lower=F))
-  }
-  result <- MI()
-  result
-}#family.test.nofounder.impute.noaggregate
-
-
-##test for TRAP based on imputaation of the haplotype carrier status
-##assuming the IBD status is known
-##do not aggregate the info of shared chromosomes
-##the first half is family of three affected, and the second half is family of two affected
-family.test.nofounder.impute.noaggregate.seperate <- function(data=family_generated, f=risk.variant.id, method, null.maf=NULL) {
-  #check
-  stopifnot(method %in% c("trap", "trafic"))
-  
-  ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-  n_family <- max(data$data_family$family)
-  n_family_member <- table(data$data_family$family)
-  family.strct.idx <- ifelse(n_family_member==3, 1, 2)
-  #check if founder's haplotype carries any variant's with f < 0.1
-  if(length(f)==1 & f[1] <1) { #support allele frequency or list of snps
-    snp2look.idx <-  which(snp$FREQ1 < f) # snp to look for
-  } else(snp2look.idx <-  f)
-  
-  match.pattern.list <- list() #to store if the haplotype carrying a risk variant on multiple affected
-  haplo.unique.count <- list()
-  for(family.idx in 1:n_family) {
-    current_row=sum(n_family_member[1:family.idx]) - n_family_member[family.idx]
-    ##assign transmission vector based on IBD
-    #create a IBD matrix n_ind*n_ind
-    IBD.matrix <- matrix(NA, nrow=n_family_member[family.idx], ncol=n_family_member[family.idx])
-    for(a in 1:n_family_member[family.idx]) {
-      for(b in 1:n_family_member[family.idx]) {
-        IBD.matrix[a,b] <- sum(data$tran_vec[a, c("h1","h2")] %in% data$tran_vec[b, c("h1","h2")])
-      }
-    }
-    #assign a suitable transmission, not trivial to code up the algorithm assume is known for now
-    tran_vec <- data$tran_vec[(current_row+1):(current_row+n_family_member[family.idx]),]
-    ##tally the (un)ambiguous carrier haplotype
-    h1 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),7:(6+n_snp)] #the first haplotype
-    h2 <- data$data_family[(current_row+1):(current_row+n_family_member[family.idx]),-c(1:(6+n_snp))] #the second haplotype
-    #observed allele count for each individual
-    obersed.allele <- vector("numeric", n_family_member[family.idx])
-    for(a in 1:n_family_member[family.idx]) {
-      obersed.allele[a] <- (h1[a, snp2look.idx]==1) + (h2[a, snp2look.idx]==1)
-    }
-    #     (tran_vec[, c("h1","h2")])
-    #go over every possible haplotype carrier configuration with early terminatation rule
-    #need to determine the number of founder haplotypes, assume know for now
-    #can use dynamic programming, skip for now
-    match.pattern <- NULL
-    #the number of each unique haplotype occured on affecteds
-    haplo.count <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")]), LETTERS[1:4]))
-    #save the number of each observed unique haplotype occured on affecteds for later use, i.e. can be A,B,D
-    haplo.unique.count[[family.idx]] <- table(factor(as.matrix(tran_vec[ ,c("h1","h2")])))
-    for(a in 0:as.numeric(haplo.count[1]>0)) { #only loop through observed haplotypes
-      for(b in 0:as.numeric(haplo.count[2]>0)) {
-        for(c in 0:as.numeric(haplo.count[3]>0)) {
-          for(d in 0:as.numeric(haplo.count[4]>0)) {
-            allele.count <- as.numeric(apply(tran_vec[ ,c("h1","h2")], 1, function(x) {
-              temp <- c(0,0,0,0)
-              temp[match(x, c(LETTERS[1:4]))] <- 1
-              sum(c(a,b,c,d)*temp)
-            }
-            ))
-            
-            #             print(c(allele.count,obersed.allele,identical(allele.count,obersed.allele)))
-            result <- haplo.count * c(a,b,c,d)
-            result[which(haplo.count==0)] <- -9 #replace non-obsered haplotype with -9
-            if(identical(allele.count,obersed.allele)) match.pattern <- rbind(match.pattern, result)
-          }
-        }
-      }
-    }
-    colnames(match.pattern) <- LETTERS[1:4]
-    match.pattern.list[[family.idx]] <-  match.pattern
-  }
-  
-  ##Use EM to impute the carrier haplotype
-  #get ks, kn for unambuiguous families
-  count.kskn <- lapply(match.pattern.list, function(x) if(nrow(x)==1) {
-    return(c(ks3=sum(x==3), ks2=sum(x==2), kn=sum(x==1))) #count of kc, knc for each family
-  })
-  count.kskn.sum.1 <- colSums(do.call(rbind, count.kskn[which(family.strct.idx==1)]))
-  count.kskn.sum.2 <- colSums(do.call(rbind, count.kskn[which(family.strct.idx==2)]))
-  #total number of cn, cs
-  count.cscn <- sapply(1:n_family, function(family.idx) {
-    c(cs3=sum(haplo.unique.count[[family.idx]]==3),
-      cs2=sum(haplo.unique.count[[family.idx]]==2), cn=sum(haplo.unique.count[[family.idx]]==1))
-  })
-  count.cscn.sum.1 <- rowSums(count.cscn[,which(family.strct.idx==1)])
-  count.cscn.sum.2 <- rowSums(count.cscn[,which(family.strct.idx==2)])
-  #count u and the number of kn ks cn cs in different configurations
-  u.list <- list()
-  for(a in 1:n_family) {
-    n.row.config <- nrow(match.pattern.list[[a]])
-    if(n.row.config > 1) {
-      result <- NULL
-      for(b in 1:n.row.config) {
-        family.match.pattern <- match.pattern.list[[a]][b,] #current match pattern
-        ks3=sum(family.match.pattern==3)
-        ks2=sum(family.match.pattern==2)
-        kn=sum(family.match.pattern==1) #count ks kn
-        result <- rbind(result, as.vector(c(family=a, config=b, family.match.pattern, ks3, ks2, kn, t(count.cscn[,a]))))
-      }
-      colnames(result) <- c("family", "config", "A", "B", "C", "D", "ks3", "ks2", "kn", "cs3", "cs2", "cn")
-      u.list <- c(u.list ,list(as.data.frame(result)))
-    }
-  }
-  #   colnames(u.list) <- c("family", "config", "A", "B", "C", "D", "ks", "kn", "cs", "cn")
-  # match.pattern.list
-  #assuming only one locus only for now
-  EM <- function(count.kskn.sum.1=count.kskn.sum.1, count.kskn.sum.2=count.kskn.sum.2,
-                 count.cscn.sum.1=count.cscn.sum.1, count.cscn.sum.2=count.cscn.sum.2) {
-    #initialization
-    ks3.1 <- count.kskn.sum.1[1] #known shared variants  (variants occured On ibd 2 or more)
-    ks2.1 <- count.kskn.sum.1[2] #known shared variants  (variants occured On ibd 2 or more)
-    ks2.2 <- count.kskn.sum.2[2] #known shared variants  (variants occured On ibd 2 or more)
-    kn.1 <- count.kskn.sum.1[3] #known non-shared variants (variants occured on ibd 0)
-    kn.2 <- count.kskn.sum.2[3] #known non-shared variants (variants occured on ibd 0)
-    cs3.1 <- count.cscn.sum.1[1] # total number of shared chromosomes
-    cs2.1 <- count.cscn.sum.1[2] # total number of shared chromosomes
-    cs2.2 <- count.cscn.sum.2[2] # total number of shared chromosomes
-    cn.1 <- count.cscn.sum.1[3] #total number of non-shared chromosomes
-    cn.2 <- count.cscn.sum.2[3] #total number of non-shared chromosomes
-    
-    pn.init.1 <- kn.1/(cn.1) #probability of rare variant on non-shared chromosome
-    pn.init.2 <- kn.2/(cn.2) #probability of rare variant on non-shared chromosome
-    pn.cur.1 <- ifelse(pn.init.1==0, runif(1), pn.init.1)
-    pn.cur.2 <- ifelse(pn.init.2==0, runif(1), pn.init.2)
-    ps3.init.1 <- ks3.1/(cs3.1) #probability of rare variant on shared chromosome
-    ps3.cur.1 <- ifelse(ps3.init.1==0, runif(1), ps3.init.1)
-    ps2.init.1 <- ks2.1/(cs2.1) #probability of rare variant on shared chromosome
-    ps2.init.2 <- ks2.2/(cs2.2) #probability of rare variant on shared chromosome
-    ps2.cur.1 <- ifelse(ps2.init.1==0, runif(1), ps2.init.1)
-    ps2.cur.2 <- ifelse(ps2.init.2==0, runif(1), ps2.init.2)
-    delta <- Inf
-    iter <- 1
-    
-    u.idx <- unlist(sapply(u.list, function(x) family.strct.idx[x$family]))
-    
-    while(delta > 10^-6) {
-      print("x")
-      print(c(ps3.cur.1, ps2.cur.1, ps2.cur.2, 
-      pn.cur.1, pn.cur.2))
-      #E step
-      #us <- u*ps.cur/(pn.cur+ps.cur)
-      #un <- u*pn.cur/(pn.cur+ps.cur)
-      if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-        for(a in 1:length(u.list)) {
-          temp.prob <- with(u.list[[a]], ifelse(family.strct.idx[family]==1,
-                                                ps3.cur.1^ks3*ps2.cur.1^ks2*pn.cur.1^kn*(1-ps3.cur.1)^(cs3-ks3)*(1-ps2.cur.1)^(cs2-ks2)*(1-pn.cur.1)^(cn-kn),
-                                                ps2.cur.2^ks2*pn.cur.2^kn*(1-ps2.cur.2)^(cs2-ks2)*(1-pn.cur.2)^(cn-kn)) 
-                            ) #go through u.list and calculate the prob. for each config
-          sum.prob <- sum(temp.prob)
-          u.list[[a]]$prob <- temp.prob/sum.prob
-        }
-        u <- do.call(rbind, u.list)
-        us3.1 <- sum(with(u[which(u.idx==1),], ks3*prob)) #update us
-        us2.1 <- sum(with(u[which(u.idx==1),], ks2*prob)) #update us
-        us2.2 <- sum(with(u[which(u.idx==2),], ks2*prob)) #update us
-        un.1 <- sum(with(u[which(u.idx==1),], kn*prob)) #update un
-        un.2 <- sum(with(u[which(u.idx==2),], kn*prob)) #update un
-      }else{
-        u<-us3.1<-us2.1<-us2.2<-un.1<-un.2<-0
-      }
-      #M-step
-      pn.new.1 <- (kn.1+un.1)/cn.1
-      pn.new.2 <- (kn.2+un.2)/cn.2
-      ps2.new.1 <- (ks2.1+us2.1)/cs2.1
-      ps2.new.2 <- (ks2.2+us2.2)/cs2.2
-      ps3.new.1 <- (ks3.1+us3.1)/cs3.1
-      #print(c(mu.new, sigma2.new, f.new, cor.factor, optim.result$value))
-      
-      #check convergence
-      delta <- max(abs(pn.cur.1 - pn.new.1), abs(pn.cur.2 - pn.new.2),
-                   abs(ps2.cur.1 - ps2.new.1), abs(ps2.cur.2 - ps2.new.2),
-                   abs(ps3.cur.1 - ps3.new.1))
-      pn.cur.1 <- pn.new.1
-      pn.cur.2 <- pn.new.2
-      ps2.cur.1 <- ps2.new.1
-      ps2.cur.2 <- ps2.new.2
-      ps3.cur.1 <- ps3.new.1
-      
-      #       print(c(pn.cur, ps.cur, iter))
-      iter <- iter + 1
-      #       print(iter)
-    }
-    #c(pn.init, ps.init)
-    result <- c(ps3.cur.1, ps2.cur.1, ps2.cur.2, 
-                pn.cur.1, pn.cur.2)
-    names(result) <- c("ps3.1", "ps2.1", "ps2.2", "pn.1", "pn.2")
-    return(result)
-  }
-  
-  ##family test in TRAFIC spirit take input of imputed dataset
-  family.test.trafic.ext.impute <- function(ps3.1, ps2.1, ps2.2, pn.1, pn.2) {
-    ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-    
-    #extract info from unambiguous family
-    data.family.list <- list()
-    for(family.idx in 1:length(match.pattern.list)) {
-      if(nrow(match.pattern.list[[family.idx]])==1) {
-        match.pattern <- match.pattern.list[[family.idx]][which(match.pattern.list[[family.idx]]!=-9)]
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    #extract info from ambiguous family
-    #update the configuration probability
-    if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-      for(a in 1:length(u.list)) {
-        temp.prob <- with(u.list[[a]], ifelse(family.strct.idx[family]==1,
-                                              ps3.cur.1^ks3*ps2.cur.1^ks2*pn.cur.1^kn*(1-ps3.cur.1)^(cs3-ks3)*(1-ps2.cur.1)^(cs2-ks2)*(1-pn.cur.1)^(cn-kn),
-                                              ps2.cur.2^ks2*pn.cur.2^kn*(1-ps2.cur.2)^(cs2-ks2)*(1-pn.cur.2)^(cn-kn)) 
-        )
-        sum.prob <- sum(temp.prob)
-        prob <- temp.prob/sum.prob #config probability
-        sample.config <- sample(1:nrow(u.list[[a]]), 1, prob=prob) #which config
-        match.pattern <- u.list[[a]][sample.config,c("A","B","C","D")]
-        match.pattern <- match.pattern[which(match.pattern!=-9)]
-        
-        family.idx <- u.list[[a]]$family[1] #extract family id
-        
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    data.family <- as.data.frame(do.call(rbind, data.family.list))
-    #fit a logistic regression
-    glm.result <- summary(glm(carrier ~ haplotype_on_affect, family=binomial(link = "logit"), data=data.family))
-    
-    c(p.value=glm.result$coefficients["haplotype_on_affect", "Pr(>|z|)"], 
-      est=glm.result$coefficients["haplotype_on_affect", "Estimate"],
-      var=glm.result$coefficients["haplotype_on_affect", "Std. Error"]^2)
-  }
-  # family.test.trafic.ext.impute()
-  
-  ##test for 3c only use infor from children
-  family.test.trap.impute <- function(ps3.1, ps2.1, ps2.2, pn.1, pn.2) {
-    ##hypothesis testing count the number of carrier haplotypes transmitted to the offsprings
-    #extract info from unambiguous family
-    data.family.list <- list()
-    for(family.idx in 1:length(match.pattern.list)) {
-      if(nrow(match.pattern.list[[family.idx]])==1) {
-        match.pattern <- match.pattern.list[[family.idx]][which(match.pattern.list[[family.idx]]!=-9)]
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    #extract info from ambiguous family
-    #update the configuration probability
-    if(length(u.list)!=0) { #prevent the error when there's no ambiguous families
-      for(a in 1:length(u.list)) {
-        temp.prob <- with(u.list[[a]], ifelse(family.strct.idx[family]==1,
-                                              ps3.cur.1^ks3*ps2.cur.1^ks2*pn.cur.1^kn*(1-ps3.cur.1)^(cs3-ks3)*(1-ps2.cur.1)^(cs2-ks2)*(1-pn.cur.1)^(cn-kn),
-                                              ps2.cur.2^ks2*pn.cur.2^kn*(1-ps2.cur.2)^(cs2-ks2)*(1-pn.cur.2)^(cn-kn)) 
-        )
-        sum.prob <- sum(temp.prob)
-        prob <- temp.prob/sum.prob #config probability
-        sample.config <- sample(1:nrow(u.list[[a]]), 1, prob=prob) #which config
-        match.pattern <- u.list[[a]][sample.config,c("A","B","C","D")]
-        match.pattern <- match.pattern[which(match.pattern!=-9)]
-        
-        family.idx <- u.list[[a]]$family[1]
-        
-        data.family.list <- c(data.family.list, list(t(rbind(haplotype_on_affect=haplo.unique.count[[family.idx]], carrier=match.pattern>=1))))
-      }
-    }
-    
-    #start looking at each family
-    test.stat <- sapply(data.family.list, function(x) {
-      n_founder <- 2
-      n_carrier <- sum(x[,2]) #no. of carrier haplotypes
-      if(!(n_carrier==0)) { #skip families with 0 carrier haplotypes in sibpair
-        observed <- sum(x[,1] * x[, 2])
-        
-        #calculate expectation and variance
-        n_unique_carrier <- sum(x[,2]==1)
-        founder <- t(combn(LETTERS[1:(2*n_founder)], n_unique_carrier)) #use minimum carrier haplotype in sibpair as an estimate for the number of founder's carrier haplotypes
-        S <- apply(founder, 1, function(y) {
-          carrier <- as.numeric(rownames(x) %in% y) #founder's haplotype
-          #       print(carrier)
-          
-          IBD_haplotype_observed <- sum(x[,1] * carrier)
-        }
-        )
-        
-        #       print(S)
-        S <- S[which(S!=0)] #only count the configuration when there is at least one variant observed in the sibpair
-        c(observed=observed, mean=mean(S), var=sum((S-mean(S))^2)/length(S), n_carrier=n_carrier, n_unique_carrier=n_unique_carrier)
-      }
-    }
-    )
-    test.stat <- data.frame(do.call(rbind, test.stat))
-    
-    v <- test.stat$var
-    se <- sqrt(sum(v))
-    #e_avg <- mean(e) #overall expectation
-    final.test.stat <- sum(test.stat$observed - test.stat$mean)/se
-    
-    #c(t, n_test.data)#T and number of informative families
-    p.value <- 2*pnorm(abs(final.test.stat), lower=F) #p-value
-    c(p.value=p.value, est=sum(test.stat$observed - test.stat$mean), var=se^2)
-  }#family.test.trap.impute
-  
-  
-  #choose trap or trafic to use
-  impute.method <- switch(method, trap=family.test.trap.impute, trafic=family.test.trafic.ext.impute)
-  #apply test with multiple imputation
-  MI <- function() {
-    #initialization
-    diff <- NULL
-    var <- NULL
-    D <- 10
-    #run EM to estimate the allele frequency
-    if(!is.null(null.maf)) {
-      pspn <- c(null.maf, null.maf, null.maf)
-    }else {
-      pspn <- EM(count.kskn.sum.1=count.kskn.sum.1, count.kskn.sum.2=count.kskn.sum.2,
-                 count.cscn.sum.1=count.cscn.sum.1, count.cscn.sum.2=count.cscn.sum.2)  
-    }
-    for(i in 1:D) {
-      mi.result <- impute.method(ps3.1=pspn[1], ps2.1=pspn[2], ps2.2=pspn[3],
-                                 pn.1=pspn[4], pn.2=pspn[5])
-      diff <- cbind(diff, mi.result[2])
-      var <- cbind(var, mi.result[3])
-    }
-    
-    TD <- mean(diff)
-    VARD <- mean(var) + (1+1/D)*sum((diff-TD)^2)/(D-1)
-    c(pchisq(TD^2/VARD, df=1, lower=F))
-  }
-  result <- MI()
-  result
-}#family.test.nofounder.impute.noaggregate.seperate
 
 
 ##imputation test for TRAP using the sibpair who shares zero IBD chromosome

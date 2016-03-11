@@ -73,32 +73,33 @@ sim_result <- replicate(n_rep, {
   #test on founders as between-family information
   result.tmp <- family.test(data=family_generated, f=risk.variant.id, association.test=T)
   result.trap.combined <- result.tmp$p.value
-  result.trap.combined.z <- result.tmp$z.p.value
-  result.trap.combined.z.weighted <- result.tmp$z.weighted.p.value
+  result.trap.combined.info <- result.tmp$p.value.info
+  result.trap.nofounder <- result.tmp$p.value.trap
   result.trap.association <- result.tmp$p.value.association
-  
+  result.trap.info.association <- result.tmp$p.value.info.association
   
   result.tmp <- family.test.trafic.ext(data=family_generated, f=risk.variant.id, association.test=T)
   result.trafic_ext.combined <- result.tmp$p.value
-  result.trafic_ext.combined.z <- result.tmp$z.p.value
-  result.trafic_ext.combined.z.weighted <- result.tmp$z.weighted.p.value
+  result.trafic_ext.combined.info <- result.tmp$p.value.info
+  result.trafic_ext.nofounder <- result.tmp$p.value.trafic_ext
   result.trafic_ext.association <- result.tmp$p.value.association
+  result.trafic_ext.info.association <- result.tmp$p.value.info.association
   
   #only report p.value
-  c(result.trap, result.trap.association, result.trap.combined, result.trap.combined.z, result.trap.combined.z.weighted,
-    result.trafic_ext, result.trafic_ext.association, result.trafic_ext.combined, result.trafic_ext.combined.z, result.trafic_ext.combined.z.weighted)
+  c(result.trap, result.trap.nofounder, result.trap.association, result.trap.info.association, result.trap.combined, result.trap.combined.info,
+    result.trafic_ext, result.trafic_ext.nofounder, result.trafic_ext.association, result.trafic_ext.info.association, result.trafic_ext.combined, result.trafic_ext.combined.info)
 })
 ##remove junk files produced by fbskat
 system(paste("rm results_",seed,"*.txt", sep=""))
 system(paste("rm mendelian_errors_",seed,"*.txt", sep=""))
 system(paste("rm data_",seed,"*.ped", sep=""))
-system(paste("rm genes_",seed,"*.ped", sep=""))
-system(paste("rm weight_",seed,"*.ped", sep=""))
-system(paste("rm variant_pass_",seed,"*.ped", sep=""))
+system(paste("rm genes_",seed,"*.txt", sep=""))
+system(paste("rm weight_",seed,"*.txt", sep=""))
+system(paste("rm variant_pass_",seed,"*.txt", sep=""))
 ## Write out your results to a csv file
 result.df <- as.data.frame(t(sim_result))
-colnames(result.df) <- c("result.trap", "result.trap.association", "result.trap.combined", "result.trap.combined.z", "result.trap.combined.z.weighted",
-    "result.trafic_ext", "result.trafic_ext.association", "result.trafic_ext.combined", "result.trafic_ext.combined.z", "result.trafic_ext.combined.z.weighted")
+colnames(result.df) <- c("result.trap", "result.trap.nofounder", "result.trap.association", "result.trap.info.association", "result.trap.combined", "result.trap.combined.info",
+    "result.trafic_ext", "result.trafic_ext.nofounder", "result.trafic_ext.association", "result.trafic_ext.info.association", "result.trafic_ext.combined", "result.trafic_ext.combined.info")
 result.df <- cbind(seed,f,r,p_dis,risk.variant.id=paste(c(risk.variant.id), collapse = "_"),risk.haplo.f,n_family,family_strct,result.df)
 write.csv(result.df, paste("res_",seed,"_",r,"_",f,"_",n_family,".csv",sep=""), row.names=FALSE)
 ## R.miSniam

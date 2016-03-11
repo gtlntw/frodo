@@ -59,12 +59,12 @@ write(paste("geneA 1", n_snp_f_causal), paste0("genes_",seed,".txt"))
 write(rep("1", n_snp_f_causal), paste0("weight_",seed,".txt"), sep="\n")
 write(rep("1", n_snp_f_causal), paste0("variant_pass_",seed,".txt"), sep="\n")
 
-rep.idx <<- 1
-sim_result <- replicate(n_rep, {
-  print(rep.idx)
-  rep.idx <<- rep.idx + 1
+sim_result <- list()
+for(i in 1:n_rep) {
+  print(i)
+  sim.fail <- F
   
-  family_generated <<- gene_family_pe(family_strct=family_strct_ped, n_family=n_family, p_dis=p_dis, Beta=Beta)
+  family_generated <<- gene_family_pe(family_strct=family_strct_ped, n_family=n_family, p_dis=p_dis, Beta=Beta, exact_affected = F)
   
   #add variant 3 since FB-SKAT can only work with 2+ in a gene
   family_generated_diploid <- hap2dip(data=family_generated, risk.variant.id=risk.variant.id, save.file=T)
@@ -72,9 +72,15 @@ sim_result <- replicate(n_rep, {
   ##test based on new imputation framework
   result.trap <- family.test(data=family_generated, f=risk.variant.id)$p.value
   result.trafic_ext <- family.test.trafic.ext(data=family_generated, f=risk.variant.id)$p.value
-  result.pedgene <- pedgene(ped=family_generated_diploid$ped, geno=family_generated_diploid$geno)
-  result.pedgene.vc <- result.pedgene$pgdf$pval.kernel
-  result.pedgene.burden <- result.pedgene$pgdf$pval.burden
+  sim.fail <- tryCatch({  
+      result.pedgene <- pedgene(ped=family_generated_diploid$ped, geno=family_generated_diploid$geno)
+      print(result.pedgene)
+      result.pedgene.vc <- result.pedgene$pgdf$pval.kernel
+      result.pedgene.burden <- result.pedgene$pgdf$pval.burden
+      F
+    }, 
+    error = function(e) return(T) 
+  )
   
   system(paste("/net/frodo/home/khlin/p3/FB-SKAT/FB-SKAT_v2.1 data_",seed,".ped variant_pass_",seed,".txt genes_",seed,".txt weight_",seed,".txt results_", seed, "_ mendelian_errors_",seed,"_ 10000 1 0.01 0 0", sep=""))
   system(paste("/net/frodo/home/khlin/p3/FB-SKAT/FB-SKAT_v2.1 data_",seed,".ped variant_pass_",seed,".txt genes_",seed,".txt weight_",seed,".txt results_", seed, "_ mendelian_errors_",seed,"_ 10000 1 0.01 1 0", sep=""), ignore.stdout = TRUE)
@@ -89,25 +95,27 @@ sim_result <- replicate(n_rep, {
   obj <- SKAT_Null_Model(data.cc.diploid$ped$trait ~ 1, out_type="D")
   result.cc <- SKAT(as.matrix(data.cc.diploid$geno[, -c(1:2)]), obj, weights.beta = c(1,1), r.corr = 1)$p.value
   
+  #skip return when errors occured
+  if(sim.fail==F) {
   #only report p.value
-  c(result.trap, result.trafic_ext, 
+  sim_result[[i]] <- data.frame(result.trap, result.trafic_ext, 
     result.pedgene.vc, result.pedgene.burden,
     result.fbskat.vc, result.fbskat.burden, 
-    result.cc)
-})
+    result.cc) 
+  } else {
+    warning("error occured!!")
+    next
+  }
+}
 ##remove junk files produced by fbskat
 system(paste("rm results_",seed,"*.txt", sep=""))
 system(paste("rm mendelian_errors_",seed,"*.txt", sep=""))
 system(paste("rm data_",seed,"*.ped", sep=""))
-system(paste("rm genes_",seed,"*.ped", sep=""))
-system(paste("rm weight_",seed,"*.ped", sep=""))
-system(paste("rm variant_pass_",seed,"*.ped", sep=""))
+system(paste("rm genes_",seed,"*.txt", sep=""))
+system(paste("rm weight_",seed,"*.txt", sep=""))
+system(paste("rm variant_pass_",seed,"*.txt", sep=""))
 ## Write out your results to a csv file
-result.df <- as.data.frame(t(sim_result))
-colnames(result.df) <- c("result.trap", "result.trafic_ext", 
-                         "result.pedgene.vc", "result.pedgene.burden",
-                         "result.fbskat.vc", "result.fbskat.burden",
-                         "result.cc")
+result.df <- do.call(rbind, sim_result)
 result.df <- cbind(seed,f,r,p_dis,risk.variant.id=paste(c(risk.variant.id), collapse = "_"),risk.haplo.f,n_family,family_strct,result.df)
 write.csv(result.df, paste("res_",seed,"_",r,"_",f,"_",n_family,".csv",sep=""), row.names=FALSE)
 ## R.miSniam

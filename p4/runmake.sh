@@ -24,7 +24,15 @@ rm -rf start*.log end*.log
 
 #command to run
 [ -z "$job_name" ] && echo need to give a job name \"./runmake.sh -j xxxxxx\" && exit 1
-jobNum=250; #number of parallel jobs
+jobNum=500; #number of parallel jobs
 echo "running ${jobNum} parallel jobs"
 python ./makefile.py -l ${launch} -j ${job_name};
-nohup make -j ${jobNum} --keep-going -f makefile_${job_name} > "runmake_${job_name}.log" 2>&1 &
+
+##run twice to make sure the preempted jobs are rerun
+cat <<EOF > runmake_job.sh
+#!/bin/bash
+make -j ${jobNum} --keep-going -f makefile_${job_name} 
+make -j ${jobNum} --keep-going -f makefile_${job_name} 
+EOF
+chmod +x runmake_job.sh
+./runmake_job.sh > "runmake_${job_name}.log" 2>&1 &

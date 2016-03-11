@@ -128,7 +128,7 @@ def makeLocalStep(tgt, dep, cmd):
 ##initialize
 opts['seed']=1000 #starting seed number
 opts['n_rep_total']=1000 #total number of replications
-opts['n_rep']=100 #number of replications in each parallele job
+opts['n_rep']=50 #number of replications in each parallele job
 opts['n_ite']=opts['n_rep_total']/opts['n_rep'] #number of parallele jobs
 opts['n_family']=1000 #number of family
 
@@ -140,65 +140,74 @@ dep = ''
 cmd = ['[ ! -f {outputDir}/runmake_{jobName}_time.log ] && echo > {outputDir}/runmake_{jobName}_time.log; date | awk \'{{print "Simulations pipeline\\n\\nstart: "$$0}}\' >> {outputDir}/runmake_{jobName}_time.log'.format(**opts)]
 makeJob('local', tgt, dep, cmd)
 
-opts["param"] = "--time=1-0:0 --exclude=dl3601" #indicate this is a quick job
+opts["exclude"] = "--exclude=../exclude_node.txt"
+opts["param"] = "--time=1-12:0 --mem=4000 {exclude}".format(**opts) #indicate this is a quick job
 ######################
 #1.1. run simulations by calling mainSim.R
 ######################
 inputFilesOK = []
 
-opts['trait_mean'] = 0 
-opts['family_strct'] = '\"2g.2f.2c\"' #family structure
+opts['trait_mean'] = 100 
+opts['family_strct'] = '\"3g.3a.5u\"' #family structure
 opts['dis_cutoff']='NA' #prevalence
 opts['f'] = 0.01 #rare
+
+opts['exact_affected'] = '\"F\"' #exact_affected
 for i in numpy.arange(0,1.1,0.1):
 	for j in range(opts['n_ite']):
 		opts['r'] = i
 		tgt = 'callmainSim_{seed}.OK'.format(**opts)
 		inputFilesOK.append(tgt)
 		dep = ''
-		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} trait_mean {trait_mean} dis_cutoff {dis_cutoff} family_strct {family_strct} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{dis_cutoff}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
+		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} trait_mean {trait_mean} dis_cutoff {dis_cutoff} family_strct {family_strct} exact_affected {exact_affected} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{dis_cutoff}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
 		makeJob(opts['launchMethod'], tgt, dep, cmd)
 		opts['seed'] += 1	
 
-opts['family_strct'] = '\"2g.2a.2u\"' #family structure
-opts['dis_cutoff']='1.645' #prevalence
-opts['f'] = 0.01 #rare
+#exact_affect=F
+opts['dis_cutoff']='1.28' #prevalence=0.1
+opts['exact_affected'] = '\"F\"' #exact_affected
 for i in numpy.arange(0,1.1,0.1):
 	for j in range(opts['n_ite']):
 		opts['r'] = i
 		tgt = 'callmainSim_{seed}.OK'.format(**opts)
 		inputFilesOK.append(tgt)
 		dep = ''
-		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} trait_mean {trait_mean} dis_cutoff {dis_cutoff} family_strct {family_strct} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{dis_cutoff}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
+		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} trait_mean {trait_mean} dis_cutoff {dis_cutoff} family_strct {family_strct} exact_affected {exact_affected} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{dis_cutoff}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
 		makeJob(opts['launchMethod'], tgt, dep, cmd)
 		opts['seed'] += 1	
 
+#exact_affect=T
+opts['dis_cutoff']='1.28' #prevalence=0.1
+opts['exact_affected'] = '\"T\"' #exact_affected
+for i in numpy.arange(0,1.1,0.1):
+	for j in range(opts['n_ite']):
+		opts['r'] = i
+		tgt = 'callmainSim_{seed}.OK'.format(**opts)
+		inputFilesOK.append(tgt)
+		dep = ''
+		cmd = ['R --vanilla --args seed {seed} n_rep {n_rep} r {r} f {f} n_family {n_family} trait_mean {trait_mean} dis_cutoff {dis_cutoff} family_strct {family_strct} exact_affected {exact_affected} < mainSim.R > mainSim{seed}_{n_rep}_{r}_{n_family}_{dis_cutoff}_{f}_{family_strct}.Rout 2>&1'.format(**opts)]
+		makeJob(opts['launchMethod'], tgt, dep, cmd)
+		opts['seed'] += 1	
+
+		
 ######################
 #1.2. combine the result
 ######################
 tgt = 'pasteResults.OK'
 dep = ' '.join(inputFilesOK)
-cmd = ['Rscript paste_mainSim_results.R']
+cmd = ['python paste_mainSim_results.py']
 makeJob('local', tgt, dep, cmd)
 
 ######################
-#1.3. delete unnecesary files
-######################
-tgt = 'delTempFile.OK'
-dep = 'pasteResults.OK'
-cmd = ['rm -f result*.txt mendelian*.txt gene*.txt weight*.txt variant_pass*.txt data*.ped'.format(**opts)]
-makeJob('local', tgt, dep, cmd)
-
-######################
-#1.4. copy the results to a folder with name $jobName
+#1.3. copy the results to a folder with name $jobName
 ######################
 tgt = 'backupResult.OK'
-dep = 'delTempFile.OK'
+dep = 'pasteResults.OK'
 cmd = ['cp * {jobName}/'.format(**opts)]
 makeJob('local', tgt, dep, cmd)
 
 ######################
-#1.5. log the end time
+#1.4. log the end time
 ######################
 tgt = '{outputDir}/end.runmake.{jobName}.OK'.format(**opts)
 dep = 'pasteResults.OK'
@@ -225,7 +234,7 @@ cmds.append('\trm -f *.OK *.log *.csv *.Rout* *.out* result*.txt mendelian*.txt 
 #clean_job
 tgts.append('clean_job')
 deps.append('')
-cmds.append('\tps xu | grep make | grep {jobName} | awk \'{{print $$2}}\' | xargs --verbose kill; scancel -n {jobName}\n'.format(**opts))
+cmds.append('\tscancel -n {jobName}; ps xu | grep make | grep {jobName} | awk \'{{print $$2}}\' | xargs --verbose kill\n'.format(**opts))
  
 for tgt,dep,cmd in zip(tgts, deps, cmds):
 	MAK.write('{tgt} : {dep}\n'.format(tgt=tgt, dep=dep))
